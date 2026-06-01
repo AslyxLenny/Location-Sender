@@ -14,9 +14,9 @@ d'adresse IP à saisir ni de recherche d'appareil.
 
 ```
 ┌──────────────────────┐        UDP broadcast         ┌──────────────────────┐
-│      ÉMETTEUR         │   (position GPS, ~1/s)       │      RECEIVER        │
-│  lit le GPS réel  ───────────────────────────────▶  │  injecte en mock     │
-│  et le diffuse       │      port 8080 (défaut)      │  location (× facteur)│
+│      ÉMETTEUR        │   (position GPS, ~1/s)       │      RECEIVER        │
+    lit le GPS réel     ─────────────────────────────▶   injecte en mock     
+│   et le diffuse      │      port 8080 (défaut)      │ location (× facteur) │
 └──────────────────────┘                              └──────────────────────┘
 ```
 
@@ -130,5 +130,6 @@ responsable et conforme aux conditions d'utilisation des services tiers.
 
 ## Licence
 
-À définir — ajoutez un fichier `LICENSE` (par exemple MIT) avant publication si
-vous souhaitez autoriser la réutilisation.
+Distribué sous licence **MIT** — voir le fichier [LICENSE](LICENSE).
+
+© 2026 Lenny Viator
