@@ -12,6 +12,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import fr.locationsender.core.Bus
 import fr.locationsender.net.NetUtils
@@ -39,6 +40,7 @@ class SenderService : Service(), LocationListener {
     private var socket: DatagramSocket? = null
 
     @Volatile private var lastLocation: Location? = null
+    @Volatile private var lastGpsElapsedMs = 0L
     private var port: Int = Protocol.DEFAULT_PORT
 
     private lateinit var locationManager: LocationManager
@@ -93,7 +95,9 @@ class SenderService : Service(), LocationListener {
                     locationManager.getLastKnownLocation(p)?.let {
                         if (lastLocation == null) lastLocation = it
                     }
-                    locationManager.requestLocationUpdates(p, 1000L, 0f, this)
+                    // Cadence maximale (le matériel plafonne en général à ~1 Hz) :
+                    // le receiver lisse ensuite par dead-reckoning.
+                    locationManager.requestLocationUpdates(p, 0L, 0f, this)
                 }
             } catch (_: Exception) {
             }
@@ -116,7 +120,8 @@ class SenderService : Service(), LocationListener {
                 if (loc != null) {
                     val speedKmh = loc.speed * 3.6f
                     val acc = if (loc.hasAccuracy()) loc.accuracy else 0f
-                    val data = Protocol.encodeLocation(loc.latitude, loc.longitude, acc, speedKmh)
+                    val bearing = if (loc.hasBearing()) loc.bearing else 0f
+                    val data = Protocol.encodeLocation(loc.latitude, loc.longitude, acc, speedKmh, bearing)
                     // Diffusion sur toutes les cibles de broadcast disponibles
                     // (recalculées à chaque envoi pour suivre les changements de réseau).
                     var sentToAny = false
@@ -144,7 +149,7 @@ class SenderService : Service(), LocationListener {
                         Bus.updateSender { it.copy(lastError = "Aucun réseau pour diffuser") }
                     }
                 }
-                delay(1000)
+                delay(SEND_INTERVAL_MS)
             }
         }
     }
@@ -155,7 +160,15 @@ class SenderService : Service(), LocationListener {
     }
 
     override fun onLocationChanged(location: Location) {
-        lastLocation = location
+        // On privilégie le GPS (cap + vitesse + meilleure précision). Un fix
+        // réseau n'est retenu que si le GPS est silencieux depuis un moment.
+        val now = SystemClock.elapsedRealtime()
+        if (location.provider == LocationManager.GPS_PROVIDER) {
+            lastGpsElapsedMs = now
+            lastLocation = location
+        } else if (now - lastGpsElapsedMs > GPS_STALE_MS) {
+            lastLocation = location
+        }
     }
 
     override fun onProviderEnabled(provider: String) {}
@@ -180,6 +193,12 @@ class SenderService : Service(), LocationListener {
     companion object {
         const val ACTION_STOP = "fr.locationsender.STOP_SENDER"
         const val EXTRA_PORT = "port"
+
+        // Diffusion à 2 Hz : recalages plus fréquents pour le dead-reckoning.
+        private const val SEND_INTERVAL_MS = 500L
+
+        // Délai au-delà duquel on accepte un fix réseau faute de GPS récent.
+        private const val GPS_STALE_MS = 5_000L
 
         fun start(context: Context, port: Int) {
             val intent = Intent(context, SenderService::class.java).apply {

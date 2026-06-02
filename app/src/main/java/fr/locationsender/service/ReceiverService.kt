@@ -27,6 +27,7 @@ import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.SocketAddress
 import kotlin.math.abs
+import kotlin.math.min
 
 /**
  * Service foreground receiver : écoute l'UDP, applique un facteur de vitesse
@@ -45,12 +46,19 @@ class ReceiverService : Service() {
     private lateinit var locationManager: LocationManager
     private val mockProviders = ArrayList<String>()
 
-    // Dernière position reçue (poussée en continu par la boucle de mock).
+    // Dernier fix reçu, servant de base au dead-reckoning de la boucle de mock.
     @Volatile private var hasLocation = false
-    @Volatile private var lastLat = 0.0
-    @Volatile private var lastLon = 0.0
-    @Volatile private var lastAcc = 0f
-    @Volatile private var lastSpeedKmhIn = 0f
+    @Volatile private var baseLat = 0.0
+    @Volatile private var baseLon = 0.0
+    @Volatile private var baseAcc = 0f
+    @Volatile private var baseSpeedKmh = 0f
+    @Volatile private var baseBearingDeg = 0f
+    @Volatile private var baseTimeNanos = 0L
+
+    // Vitesse mesurée entre les deux derniers fixes (degrés/s) : sert à
+    // extrapoler la position en continu, sans dépendre du cap transmis.
+    @Volatile private var velLatPerSec = 0.0
+    @Volatile private var velLonPerSec = 0.0
 
     // Facteur réellement appliqué, qui « rampe » doucement vers la cible.
     private var currentFactor = 1f
@@ -130,15 +138,24 @@ class ReceiverService : Service() {
         Bus.updateReceiver { it.copy(mockActive = anyOk) }
     }
 
-    private fun pushMock(lat: Double, lon: Double, accuracyM: Float, speedMs: Float) {
+    private fun pushMock(
+        lat: Double,
+        lon: Double,
+        accuracyM: Float,
+        speedMs: Float,
+        bearingDeg: Float,
+    ) {
+        // Plancher de précision : une précision à 0 est rejetée/déclassée par
+        // certaines apps ; on garantit une valeur plausible.
+        val safeAccuracy = if (accuracyM > 1f) accuracyM else 5f
         for (p in mockProviders) {
             try {
                 val loc = Location(p).apply {
                     latitude = lat
                     longitude = lon
-                    accuracy = accuracyM
+                    accuracy = safeAccuracy
                     speed = speedMs
-                    bearing = 0f
+                    bearing = bearingDeg
                     altitude = 0.0
                     time = System.currentTimeMillis()
                     elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
@@ -198,18 +215,31 @@ class ReceiverService : Service() {
                     if (lat.isNaN() || lon.isNaN()) continue
                     val acc = json.optDouble("acc", 0.0).toFloat()
                     val spdIn = json.optDouble("spd", 0.0).toFloat()
-                    // On mémorise la dernière position ; l'injection mock est faite
-                    // par la boucle dédiée (qui rampe le facteur en douceur).
-                    lastLat = lat
-                    lastLon = lon
-                    lastAcc = acc
-                    lastSpeedKmhIn = spdIn
+                    val brg = json.optDouble("brg", 0.0).toFloat()
+                    // Nouveau fix = nouvelle base pour le dead-reckoning. On
+                    // mesure la vitesse réelle (deg/s) depuis le fix précédent
+                    // avant d'écraser la base ; l'injection est faite par la
+                    // boucle dédiée.
+                    val nowFix = SystemClock.elapsedRealtimeNanos()
+                    if (hasLocation) {
+                        val dtFix = (nowFix - baseTimeNanos) / 1_000_000_000.0
+                        if (dtFix > 0.05) {
+                            velLatPerSec = (lat - baseLat) / dtFix
+                            velLonPerSec = (lon - baseLon) / dtFix
+                        }
+                    }
+                    baseLat = lat
+                    baseLon = lon
+                    baseAcc = acc
+                    baseSpeedKmh = spdIn
+                    baseBearingDeg = brg
+                    baseTimeNanos = nowFix
                     hasLocation = true
                     count++
                     Bus.updateReceiver {
                         it.copy(
                             lat = lat, lon = lon, accuracyM = acc,
-                            speedKmhIn = spdIn,
+                            speedKmhIn = spdIn, bearingDeg = brg,
                             packetsReceived = count, lastSenderIp = pkt.address?.hostAddress,
                         )
                     }
@@ -236,16 +266,23 @@ class ReceiverService : Service() {
                 lastNanos = now
                 currentFactor = approach(currentFactor, targetFactor(), RAMP_PER_SEC * dt)
                 if (!hasLocation) continue
-                val spdInKmh = lastSpeedKmhIn
-                val spdOutKmh = spdInKmh * currentFactor
-                pushMock(lastLat, lastLon, lastAcc, spdOutKmh / 3.6f)
+
+                // Dead-reckoning : on prolonge la position depuis le dernier fix
+                // selon la vitesse mesurée. L'âge est borné pour figer la
+                // position si les paquets s'arrêtent (pas de dérive infinie).
+                val age = min((now - baseTimeNanos) / 1_000_000_000.0, MAX_EXTRAPOLATION_SEC)
+                val predLat = baseLat + velLatPerSec * age
+                val predLon = baseLon + velLonPerSec * age
+
+                val spdOutKmh = baseSpeedKmh * currentFactor
+                pushMock(predLat, predLon, baseAcc, spdOutKmh / 3.6f, baseBearingDeg)
                 Bus.updateReceiver { it.copy(speedKmhOut = spdOutKmh) }
                 // Notification rafraîchie au plus une fois par seconde.
                 if (now - lastNotifNanos >= 1_000_000_000L) {
                     lastNotifNanos = now
                     updateNotif(
                         "Écoute :$port",
-                        "%.5f, %.5f — %.1f→%.1f km/h".format(lastLat, lastLon, spdInKmh, spdOutKmh),
+                        "%.5f, %.5f — %.1f→%.1f km/h".format(predLat, predLon, baseSpeedKmh, spdOutKmh),
                     )
                 }
             }
@@ -303,6 +340,10 @@ class ReceiverService : Service() {
         // (soit 5 s pour passer de 0,7 à 1,0 ; ~16 s pour parcourir 0→1).
         private const val MOCK_INTERVAL_MS = 200L
         private const val RAMP_PER_SEC = 0.06f
+
+        // Dead-reckoning : durée max d'extrapolation sans nouveau fix (au-delà,
+        // la position se fige au lieu de dériver à l'infini).
+        private const val MAX_EXTRAPOLATION_SEC = 2.0
 
         fun start(context: Context, port: Int) {
             val intent = Intent(context, ReceiverService::class.java).apply {

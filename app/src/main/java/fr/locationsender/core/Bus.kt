@@ -26,6 +26,7 @@ data class ReceiverState(
     val accuracyM: Float? = null,
     val speedKmhIn: Float? = null,
     val speedKmhOut: Float? = null,
+    val bearingDeg: Float? = null,
     val packetsReceived: Long = 0,
     val lastSenderIp: String? = null,
     val mockActive: Boolean = false,

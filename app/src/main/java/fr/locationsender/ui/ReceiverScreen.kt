@@ -214,6 +214,7 @@ private fun PositionCard(
         LabeledValue("Précision", state.accuracyM?.let { "%.1f m".format(it) } ?: "—")
         LabeledValue("Vitesse reçue", state.speedKmhIn?.let { "%.1f km/h".format(it) } ?: "—")
         LabeledValue("Vitesse mockée", state.speedKmhOut?.let { "%.1f km/h".format(it) } ?: "—")
+        LabeledValue("Cap", state.bearingDeg?.let { "%.0f°".format(it) } ?: "—")
         LabeledValue("Paquets reçus", state.packetsReceived.toString())
     }
 }

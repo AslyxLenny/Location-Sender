@@ -16,13 +16,20 @@ object Protocol {
 
     const val TYPE_LOCATION = "loc"
 
-    fun encodeLocation(lat: Double, lon: Double, accuracyM: Float, speedKmh: Float): ByteArray =
+    fun encodeLocation(
+        lat: Double,
+        lon: Double,
+        accuracyM: Float,
+        speedKmh: Float,
+        bearingDeg: Float,
+    ): ByteArray =
         JSONObject()
             .put("t", TYPE_LOCATION)
             .put("lat", lat)
             .put("lon", lon)
             .put("acc", accuracyM.toDouble())
             .put("spd", speedKmh.toDouble())
+            .put("brg", bearingDeg.toDouble())
             .toString()
             .toByteArray(Charsets.UTF_8)
 
