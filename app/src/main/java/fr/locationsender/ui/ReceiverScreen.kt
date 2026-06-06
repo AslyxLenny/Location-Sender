@@ -6,9 +6,12 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,7 +31,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -45,6 +48,8 @@ import fr.locationsender.core.Bus
 import fr.locationsender.core.ReceiverState
 import fr.locationsender.service.ReceiverService
 import fr.locationsender.util.Perms
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Composable
 fun ReceiverScreen(vm: MainViewModel) {
@@ -155,6 +160,7 @@ fun ReceiverScreen(vm: MainViewModel) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SpeedCard(
     vm: MainViewModel,
@@ -162,42 +168,128 @@ private fun SpeedCard(
     mockEnabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val min by vm.factorMin.collectAsState()
+    val max by vm.factorMax.collectAsState()
+    val presets by vm.presetFactors.collectAsState()
+    val blockEnabled by vm.speedBlockEnabled.collectAsState()
+    val blockKmh by vm.speedBlockKmh.collectAsState()
+    val steps = (((max - min) / MainViewModel.STEP).roundToInt() - 1).coerceAtLeast(0)
     SectionCard("Vitesse simulée", modifier = modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Appliquer un facteur")
+            // Gauche : interrupteur, valeur courante et aide.
+            Column(
+                Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Appliquer un facteur")
+                        Text(
+                            if (mockEnabled) "Actif" else "Désactivé — vitesse réelle",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = mockEnabled, onCheckedChange = vm::setSpeedMockEnabled)
+                }
                 Text(
-                    if (mockEnabled) {
-                        "Vitesse reçue × %.2f".format(factor)
-                    } else {
-                        "Désactivé — vitesse réelle"
-                    },
+                    "× %.2f".format(factor),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "Plage réglable dans les Réglages. L'activation/désactivation est progressive.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Switch(checked = mockEnabled, onCheckedChange = vm::setSpeedMockEnabled)
+
+            Spacer(Modifier.width(12.dp))
+
+            // Droite : curseur vertical (max en haut, min en bas).
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    "× ${MainViewModel.format(max)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                VerticalSlider(
+                    value = factor.coerceIn(min, max),
+                    onValueChange = vm::setSpeedFactor,
+                    valueRange = min..max,
+                    steps = steps,
+                    length = 200.dp,
+                )
+                Text(
+                    "× ${MainViewModel.format(min)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
-        Slider(
-            value = factor,
-            onValueChange = vm::setSpeedFactor,
-            valueRange = 0f..1f,
-            steps = 19,
-        )
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text("×0", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("× %.2f".format(factor), fontWeight = FontWeight.Bold)
-            Text("×1", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (blockEnabled) {
+            Text(
+                "Vitesse plafonnée à ${MainViewModel.format(blockKmh)} km/h — en dessous, le facteur/preset s'applique.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
         }
+
         Text(
-            "L'activation et la désactivation sont progressives.",
+            "Limitations — touchez pour appliquer",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            MainViewModel.SPEED_LIMITS.forEach { limit ->
+                val pf = presets[limit] ?: 1f
+                LimitChip(
+                    limit = limit,
+                    factor = pf,
+                    active = mockEnabled && abs(factor - pf.coerceIn(min, max)) < 0.001f,
+                    onClick = { vm.applyPreset(limit) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LimitChip(
+    limit: Int,
+    factor: Float,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        shape = MaterialTheme.shapes.medium,
+        color = if (active) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(
+            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "$limit",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                "× ${MainViewModel.format(factor)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

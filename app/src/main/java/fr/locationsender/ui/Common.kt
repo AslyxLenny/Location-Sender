@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -17,14 +18,17 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import fr.locationsender.ui.theme.StatusActive
@@ -83,6 +87,37 @@ fun LabeledValue(label: String, value: String) {
             value,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/**
+ * Slider vertical : un [Slider] horizontal pivoté de 90° (le pivot transforme
+ * aussi les événements tactiles, donc le glissement vertical fonctionne). Le
+ * minimum est en bas, le maximum en haut. [length] = hauteur du curseur.
+ */
+@Composable
+fun VerticalSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int,
+    length: Dp,
+    modifier: Modifier = Modifier,
+    thickness: Dp = 48.dp,
+) {
+    Box(
+        modifier = modifier.size(width = thickness, height = length),
+        contentAlignment = Alignment.Center,
+    ) {
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            steps = steps,
+            modifier = Modifier
+                .requiredWidth(length)
+                .rotate(-90f),
         )
     }
 }

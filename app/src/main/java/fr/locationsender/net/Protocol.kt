@@ -15,6 +15,7 @@ object Protocol {
     const val DEFAULT_PORT = 8080
 
     const val TYPE_LOCATION = "loc"
+    const val TYPE_CONTROL = "ctrl"
 
     fun encodeLocation(
         lat: Double,
@@ -32,6 +33,28 @@ object Protocol {
             .put("brg", bearingDeg.toDouble())
             .toString()
             .toByteArray(Charsets.UTF_8)
+
+    /**
+     * Contrôle de synchronisation receiver↔receiver. On n'inclut que les aspects
+     * réellement partagés (les autres sont absents = non synchronisés). [src] est
+     * l'identifiant de l'émetteur, pour ignorer l'écho de sa propre diffusion.
+     */
+    fun encodeControl(
+        src: Int,
+        factor: Float?,
+        mockEnabled: Boolean?,
+        blockEnabled: Boolean?,
+        blockKmh: Float?,
+    ): ByteArray {
+        val o = JSONObject().put("t", TYPE_CONTROL).put("src", src)
+        if (factor != null) o.put("factor", factor.toDouble())
+        if (mockEnabled != null) o.put("mock", mockEnabled)
+        if (blockEnabled != null) {
+            o.put("block", blockEnabled)
+            o.put("blockKmh", (blockKmh ?: 0f).toDouble())
+        }
+        return o.toString().toByteArray(Charsets.UTF_8)
+    }
 
     /** Parse un datagramme reçu, ou null s'il n'est pas un JSON valide. */
     fun parse(bytes: ByteArray, length: Int): JSONObject? =

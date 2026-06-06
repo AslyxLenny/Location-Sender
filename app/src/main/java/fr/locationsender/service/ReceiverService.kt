@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import fr.locationsender.core.Bus
+import fr.locationsender.core.SpeedControl
 import fr.locationsender.net.Protocol
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +29,8 @@ import java.net.InetSocketAddress
 import java.net.SocketAddress
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.random.Random
+import org.json.JSONObject
 
 /**
  * Service foreground receiver : écoute l'UDP, applique un facteur de vitesse
@@ -45,6 +48,7 @@ class ReceiverService : Service() {
 
     private lateinit var locationManager: LocationManager
     private val mockProviders = ArrayList<String>()
+    private val prefs by lazy { getSharedPreferences("ls", Context.MODE_PRIVATE) }
 
     // Dernier fix reçu, servant de base au dead-reckoning de la boucle de mock.
     @Volatile private var hasLocation = false
@@ -62,6 +66,10 @@ class ReceiverService : Service() {
 
     // Facteur réellement appliqué, qui « rampe » doucement vers la cible.
     private var currentFactor = 1f
+
+    // Petite oscillation (marche aléatoire bornée [0,1] km/h) pour que la vitesse
+    // bloquée ne soit jamais une constante parfaite.
+    private var speedJitter = 0f
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -209,6 +217,10 @@ class ReceiverService : Service() {
                     break
                 }
                 val json = Protocol.parse(pkt.data, pkt.length) ?: continue
+                if (json.optString("t") == Protocol.TYPE_CONTROL) {
+                    handleControl(json)
+                    continue
+                }
                 if (json.optString("t") == Protocol.TYPE_LOCATION) {
                     val lat = json.optDouble("lat", Double.NaN)
                     val lon = json.optDouble("lon", Double.NaN)
@@ -249,6 +261,54 @@ class ReceiverService : Service() {
     }
 
     /**
+     * Applique un contrôle de synchronisation reçu d'un autre receiver : met à
+     * jour le mock (Bus) et la persistance, puis notifie l'UI via Bus.remoteControl.
+     * On ignore l'écho de sa propre diffusion et on ne rediffuse jamais (pas de boucle).
+     */
+    private fun handleControl(json: JSONObject) {
+        if (!Bus.syncEnabled.value) return
+        if (json.optInt("src", 0) == Bus.sessionId) return
+
+        val editor = prefs.edit()
+        var factor: Float? = null
+        var mock: Boolean? = null
+        var blockEnabled: Boolean? = null
+        var blockKmh: Float? = null
+
+        if (json.has("factor") && Bus.syncFactor.value) {
+            // Borné aux limites locales (un facteur hors plage casserait l'UI/le mock).
+            val f = json.optDouble("factor").toFloat()
+                .coerceIn(Bus.factorMin.value, Bus.factorMax.value)
+            Bus.speedFactor.value = f
+            editor.putFloat("factor", f)
+            factor = f
+        }
+        if (json.has("mock") && Bus.syncMockEnabled.value) {
+            val m = json.optBoolean("mock")
+            Bus.speedMockEnabled.value = m
+            editor.putBoolean("mockEnabled", m)
+            mock = m
+        }
+        // On exige block ET blockKmh : un paquet tronqué ne doit pas brider à 0.
+        if (json.has("block") && json.has("blockKmh") && Bus.syncBlock.value) {
+            val b = json.optBoolean("block")
+            val bk = json.optDouble("blockKmh", 0.0).toFloat()
+            // La valeur AVANT le drapeau : si la boucle de mock lit entre les deux,
+            // elle voit au pire l'ancien état (drapeau off), jamais une valeur incohérente.
+            Bus.speedBlockKmh.value = bk
+            Bus.speedBlockEnabled.value = b
+            editor.putBoolean("blockEnabled", b).putFloat("blockKmh", bk)
+            blockEnabled = b
+            blockKmh = bk
+        }
+
+        if (factor != null || mock != null || blockEnabled != null) {
+            editor.apply()
+            Bus.remoteControl.tryEmit(SpeedControl(factor, mock, blockEnabled, blockKmh))
+        }
+    }
+
+    /**
      * Boucle d'injection du mock à fréquence fixe. Le facteur appliqué rampe
      * progressivement vers sa cible (facteur du curseur si activé, sinon 1),
      * pour que l'activation/désactivation ne change pas la vitesse d'un coup.
@@ -274,7 +334,20 @@ class ReceiverService : Service() {
                 val predLat = baseLat + velLatPerSec * age
                 val predLon = baseLon + velLonPerSec * age
 
-                val spdOutKmh = baseSpeedKmh * currentFactor
+                val factored = baseSpeedKmh * currentFactor
+                val spdOutKmh = if (Bus.speedBlockEnabled.value && factored > Bus.speedBlockKmh.value) {
+                    // Au-dessus du plafond → on bride à la vitesse bloquée, avec
+                    // une marche aléatoire douce [0,1] km/h (réflexion aux bornes)
+                    // pour ne jamais afficher une constante parfaite.
+                    var j = speedJitter + (Random.nextFloat() - 0.5f) * 0.15f
+                    if (j < 0f) j = -j
+                    if (j > 1f) j = 2f - j
+                    speedJitter = j
+                    Bus.speedBlockKmh.value + j
+                } else {
+                    // En dessous du plafond (ou blocage off) : le facteur/preset s'applique.
+                    factored
+                }
                 pushMock(predLat, predLon, baseAcc, spdOutKmh / 3.6f, baseBearingDeg)
                 Bus.updateReceiver { it.copy(speedKmhOut = spdOutKmh) }
                 // Notification rafraîchie au plus une fois par seconde.
